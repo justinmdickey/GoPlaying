@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"errors"
+	"flag"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -54,7 +56,7 @@ func getSongInfo(player string) (string, error) {
 	cmd.Stdout = &out
 	err := cmd.Run()
 	if err != nil {
-		return "", err
+		return "", errors.New("Can't get player metadata for " + player)
 	}
 
 	output := strings.TrimSpace(out.String())
@@ -67,19 +69,27 @@ func getSongInfo(player string) (string, error) {
 		return "Unexpected output format.", nil
 	}
 
+	emptyField := "—" // em dash
+
 	// Truncate the title, artist, and album to the specified max length
 	title := truncateText(strings.TrimSpace(info[0]), maxTitleLength)
 	artist := truncateText(strings.TrimSpace(info[1]), maxArtistLength)
+	if artist == "" {
+		artist = emptyField
+	}
 	album := truncateText(strings.TrimSpace(info[2]), maxAlbumLength)
+	if album == "" {
+		album = emptyField
+	}
 	status := strings.TrimSpace(info[3])
 
 	// Get song length
-	cmd = exec.Command("playerctl", "metadata", "mpris:length")
+	cmd = exec.Command("playerctl", "-p", player, "metadata", "mpris:length")
 	out.Reset()
 	cmd.Stdout = &out
 	err = cmd.Run()
 	if err != nil {
-		return "", err
+		return "", errors.New("Can't get track length")
 	}
 
 	// Song length is in microseconds, so convert it to seconds
@@ -89,12 +99,12 @@ func getSongInfo(player string) (string, error) {
 	songLengthSeconds = songLengthSeconds / 1e6 // Convert to seconds
 
 	// Get current position
-	cmd = exec.Command("playerctl", "position")
+	cmd = exec.Command("playerctl", "-p", player, "position")
 	out.Reset()
 	cmd.Stdout = &out
 	err = cmd.Run()
 	if err != nil {
-		return "", err
+		return "", errors.New("Can't get track position")
 	}
 
 	var currentPosition float64
@@ -111,9 +121,17 @@ func getSongInfo(player string) (string, error) {
 	progressBarTotalWidth := 25
 
 	filledLength := int(progressPercentage / 100 * float64(progressBarTotalWidth))
+	// Fixes playerctl issue, see https://github.com/justinmdickey/goplaying/issues/8
+	if filledLength < 0 {
+		filledLength = 0
+	} else if filledLength > 25 {
+		filledLength = 25
+	}
+
+	unFilledLength := progressBarTotalWidth-filledLength
 
 	// Build the progress bar (e.g., [█████-----]) with the current progress
-	progressBar := "[" + strings.Repeat("[green]█", filledLength) + strings.Repeat("[white]-", progressBarTotalWidth-filledLength) + "]"
+	progressBar := "[" + strings.Repeat("[green]█", filledLength) + strings.Repeat("[white]-", unFilledLength) + "]"
 
 	// Padding for display
 	padding := "    "
@@ -138,7 +156,22 @@ func controlPlayer(command string) error {
 }
 
 func main() {
-	player := "spotify" // e.g., "spotify"
+	var playerName string
+	var playerNameShort string
+
+	flag.StringVar(&playerName, "player", "", "Player name")
+	flag.StringVar(&playerNameShort, "p", "", "Player name)")
+	flag.Parse()
+
+	var player string
+
+	if playerName != "" {
+		player = playerName
+	} else if playerNameShort != "" {
+		player = playerNameShort
+	} else {
+		player = ""
+	}
 
 	// Create a TextView widget
 	songText := tview.NewTextView().
